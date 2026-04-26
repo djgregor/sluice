@@ -1,0 +1,6 @@
+# Generated at install time with org-specific config
+Defaults.gs
+defaults.conf
+
+# clasp project binding (specific to one sheet)
+.clasp.json

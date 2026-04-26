@@ -1,0 +1,25 @@
+# Sluice shared defaults
+#
+# Copy this file to defaults.conf and fill in your team's values.
+# These are baked into the Apps Script project at install time so
+# team members only need to enter their own email and API token.
+#
+# After editing, run ./install.sh to apply.
+
+SLUICE_BASE_URL=https://yourorg.atlassian.net
+SLUICE_PROJECT=MYPROJ
+# SLUICE_LOE_FIELD=customfield_NNNNN
+# SLUICE_WORKAREA_FIELD=customfield_NNNNN
+# SLUICE_WORKAREA_VALUE="My Work Area"
+# SLUICE_TEAM_FIELD=customfield_NNNNN
+# SLUICE_TEAM_ID=00000000-0000-0000-0000-000000000000
+
+# Agile custom fields (field IDs vary by Jira instance)
+# SLUICE_SPRINT_FIELD=customfield_XXXXX
+# SLUICE_STORY_POINTS_FIELD=customfield_XXXXX
+
+# Bug-specific custom fields (textarea/ADF fields used instead of Description)
+# SLUICE_BUG_STEPS_FIELD=customfield_NNNNN
+# SLUICE_BUG_EXPECTED_FIELD=customfield_NNNNN
+# SLUICE_BUG_ACTUAL_FIELD=customfield_NNNNN
+# SLUICE_BUG_OUTCOMES_FIELD=customfield_NNNNN

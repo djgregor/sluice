@@ -1,0 +1,10 @@
+# Don't push non-script files to Apps Script
+SETUP.md
+.claspignore
+.clasp.json
+.gitignore
+defaults.conf
+defaults.conf.example
+README.*
+LICENSE
+*.sh
