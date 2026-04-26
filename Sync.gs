@@ -17,108 +17,73 @@
 
 function syncCurrentSheet() {
   const ui = SpreadsheetApp.getUi();
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getActiveSheet();
 
-  // Resolve JQL
+  if (sheet.getName() === 'Sluice Dry Run') {
+    ui.alert('Sluice — Sync', 'Switch to the sheet you want to sync first.', ui.ButtonSet.OK);
+    return;
+  }
+
   const jqlResult = resolveSheetJql(sheet);
   if (jqlResult.error) {
     ui.alert('Sluice — Sync Failed', jqlResult.error, ui.ButtonSet.OK);
     return;
   }
 
-  // Confirm intent before fetching
-  const resp = ui.alert(
-    'Sluice — Sync Sheet ↔ Jira',
-    'JQL (' + jqlResult.source + '):\n' + jqlResult.jql +
-    '\n\nThis will:\n' +
-    '- Pull Jira changes into the sheet (for issues updated in Jira since last sync)\n' +
-    '- Push sheet changes to Jira (for issues edited locally since last sync)\n' +
-    '- Create new issues for rows without a Key\n' +
-    '- Append new Jira issues not yet in the sheet\n\n' +
-    'Conflict resolution: last-write-wins\n\nContinue?',
-    ui.ButtonSet.YES_NO
-  );
-  if (resp !== ui.Button.YES) return;
-
-  // Fetch Jira issues first so we can compute total scope
-  SpreadsheetApp.getActiveSpreadsheet().toast('Fetching issues from Jira…', 'Sluice', -1);
+  ss.toast('Fetching issues from Jira…', 'Sluice', -1);
 
   const columns = getResolvedColumns();
   const cfg = getConfig();
   const jiraFields = buildFieldList_(columns);
   const searchResult = jiraSearch(jqlResult.jql, jiraFields, cfg.maxResults);
 
-  SpreadsheetApp.getActiveSpreadsheet().toast('', 'Sluice', 1);
+  ss.toast('', 'Sluice', 1);
 
   if (searchResult.error) {
     ui.alert('Sluice — Sync Failed', 'Jira search failed: ' + searchResult.error, ui.ButtonSet.OK);
     return;
   }
 
-  // Count actual Jira modifications (creates + pushes).
-  // Pulls and appends only write to the sheet, so they don't count.
-  // We resolve direction and compare data to get an accurate count.
-  const headerMap = readHeaderMap(sheet);
-  const lastRow = sheet.getLastRow();
-  let potentialCreates = 0;  // rows with no Key but with Summary
-  let potentialPushes = 0;   // rows where sheet wins AND data differs
-  const jiraIssueMap = {};
-  for (let j = 0; j < searchResult.issues.length; j++) {
-    jiraIssueMap[searchResult.issues[j].key] = searchResult.issues[j];
-  }
+  // Always build a dry run report first so the user can audit what's about
+  // to happen. This also gives us accurate write counts for safety limits.
+  ss.toast('Computing dry run preview…', 'Sluice', -1);
+  const report = buildDryRunReport_(sheet, searchResult.issues, columns, searchResult.truncated);
+  writeDryRunSheet_(ss, sheet.getName(), jqlResult.jql, report, searchResult.truncated);
+  ss.toast('', 'Sluice', 1);
 
-  if (headerMap['Key'] && lastRow > 1) {
-    const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
-    const keyIdx = headerMap['Key'] - 1;
-    const sumIdx = headerMap['Summary'] ? headerMap['Summary'] - 1 : -1;
-    const syncIdx = headerMap['Last Synced'] ? headerMap['Last Synced'] - 1 : -1;
-    for (let i = 0; i < data.length; i++) {
-      const k = String(data[i][keyIdx] || '').trim();
-      const s = sumIdx >= 0 ? String(data[i][sumIdx] || '').trim() : '';
-      if (!k && s) {
-        potentialCreates++;
-      } else if (k && jiraIssueMap[k]) {
-        // Check direction: only count rows where sheet wins
-        const lastSynced = syncIdx >= 0 ? normalizeCell_(data[i][syncIdx]) : '';
-        const jiraUpdated = jiraIssueMap[k].fields.updated || '';
-        const direction = resolveDirection_(lastSynced, jiraUpdated);
-        if (direction === 'push') {
-          // Check if the row actually differs from Jira
-          const rowData = {};
-          for (const header in headerMap) {
-            const colIdx = headerMap[header] - 1;
-            rowData[header] = colIdx < data[i].length ? normalizeCell_(data[i][colIdx]) : '';
-          }
-          const jiraRowData = extractRowFromIssue_(jiraIssueMap[k], columns, '');
-          if (!rowDataMatchesJira_(rowData, jiraRowData, headerMap)) {
-            potentialPushes++;
-          }
-        }
-      }
-    }
-  }
+  const maxJiraWrites = report.summary.create + report.summary.pushIssues;
 
-  const maxJiraWrites = potentialCreates + potentialPushes;
-
-  // Safety limits — only count potential Jira modifications
   if (maxJiraWrites > 50) {
     ui.alert(
       'Sluice — Sync Blocked',
-      'This sync could modify up to ' + maxJiraWrites + ' issues in Jira ' +
-      '(' + potentialCreates + ' creates + ' + potentialPushes + ' updates).\n\n' +
+      'This sync would modify ' + maxJiraWrites + ' issues in Jira ' +
+      '(' + report.summary.create + ' creates + ' + report.summary.pushIssues + ' updates).\n\n' +
       'Limit: 50 Jira modifications per pass.\n\n' +
+      'See the "Sluice Dry Run" tab for per-field details. ' +
       'Narrow your filter or split the work across multiple passes.',
       ui.ButtonSet.OK
     );
     return;
   }
 
+  const summaryMsg =
+    'JQL (' + jqlResult.source + '):\n' + jqlResult.jql + '\n\n' +
+    'Would create: ' + report.summary.create + '\n' +
+    'Would push:   ' + report.summary.pushIssues + ' issues (' +
+      report.summary.pushFields + ' field changes)\n' +
+    'Would pull:   ' + report.summary.pullIssues + ' issues (' +
+      report.summary.pullFields + ' field changes)\n' +
+    'Would append: ' + report.summary.append + '\n' +
+    'Would remove: ' + report.summary.remove + '\n' +
+    'Unchanged:    ' + report.summary.unchanged + '\n\n' +
+    'Per-field details written to the "Sluice Dry Run" tab.\n' +
+    'Conflict resolution: last-write-wins.';
+
   if (maxJiraWrites > 20) {
     const typed = ui.prompt(
       'Sluice — Large Sync Warning',
-      'This sync could modify up to ' + maxJiraWrites + ' issues in Jira ' +
-      '(' + potentialCreates + ' creates + ' + potentialPushes + ' updates).\n\n' +
-      'Type "Yes" to confirm:',
+      summaryMsg + '\n\nType "Yes" to confirm:',
       ui.ButtonSet.OK_CANCEL
     );
     if (typed.getSelectedButton() !== ui.Button.OK ||
@@ -126,9 +91,16 @@ function syncCurrentSheet() {
       ui.alert('Sluice — Sync Cancelled', 'Sync was not confirmed.', ui.ButtonSet.OK);
       return;
     }
+  } else {
+    const resp = ui.alert(
+      'Sluice — Sync Sheet ↔ Jira',
+      summaryMsg + '\n\nProceed?',
+      ui.ButtonSet.YES_NO
+    );
+    if (resp !== ui.Button.YES) return;
   }
 
-  SpreadsheetApp.getActiveSpreadsheet().toast('Syncing with Jira…', 'Sluice', -1);
+  ss.toast('Syncing with Jira…', 'Sluice', -1);
 
   const result = executeSync_withIssues_(sheet, searchResult.issues, columns, cfg);
 
@@ -341,23 +313,21 @@ function buildDryRunReport_(sheet, issues, columns, truncated) {
 
 /**
  * Per-field diff between a sheet row and the equivalent Jira row data.
- * Skips read-only columns (same logic as rowDataMatchesJira_).
+ * Only walks Sluice-managed, writable columns — user-added columns and
+ * read-only columns are ignored, matching rowDataMatchesJira_.
  *
  * @return {Array<{header,sheetVal,jiraVal}>}
  */
 function diffRow_(sheetData, jiraData, headerMap, columns) {
-  const skipHeaders = {};
-  for (let i = 0; i < columns.length; i++) {
-    if (columns[i].readOnly) skipHeaders[columns[i].header] = true;
-  }
-
   const diffs = [];
-  for (const header in headerMap) {
-    if (skipHeaders[header]) continue;
-    const sheetVal = (sheetData[header] || '').toString().trim();
-    const jiraVal = (jiraData[header] || '').toString().trim();
+  for (let i = 0; i < columns.length; i++) {
+    const col = columns[i];
+    if (col.readOnly) continue;
+    if (!headerMap[col.header]) continue;
+    const sheetVal = (sheetData[col.header] || '').toString().trim();
+    const jiraVal = (jiraData[col.header] || '').toString().trim();
     if (sheetVal !== jiraVal) {
-      diffs.push({ header: header, sheetVal: sheetVal, jiraVal: jiraVal });
+      diffs.push({ header: col.header, sheetVal: sheetVal, jiraVal: jiraVal });
     }
   }
   return diffs;
@@ -630,12 +600,13 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
 function normalizeCell_(val) {
   if (val == null) return '';
   if (val instanceof Date) {
-    // If the time portion is midnight, treat as date-only (YYYY-MM-DD)
-    if (val.getHours() === 0 && val.getMinutes() === 0 && val.getSeconds() === 0) {
-      const y = val.getFullYear();
-      const m = String(val.getMonth() + 1).padStart(2, '0');
-      const d = String(val.getDate()).padStart(2, '0');
-      return y + '-' + m + '-' + d;
+    // Use the spreadsheet's timezone, not the script's. A date-only field like
+    // "Target End Date" is stored in the sheet at midnight in the spreadsheet's
+    // tz; reading it via getHours() (script tz) shifts it and the date drifts.
+    const tz = SpreadsheetApp.getActive().getSpreadsheetTimeZone() || 'UTC';
+    const time = Utilities.formatDate(val, tz, 'HH:mm:ss');
+    if (time === '00:00:00') {
+      return Utilities.formatDate(val, tz, 'yyyy-MM-dd');
     }
     return val.toISOString();
   }
@@ -684,8 +655,9 @@ function resolveDirection_(lastSynced, jiraUpdated) {
 
 /**
  * Compare sheet row data against Jira row data to detect actual changes.
- * Skips all read-only columns (they're populated from Jira and never pushed,
- * so differences are irrelevant for deciding whether to push).
+ * Only compares Sluice-managed, writable columns. User-added columns (e.g.
+ * formula columns like "Days in Status") and read-only Sluice columns are
+ * ignored, since neither is ever pushed.
  *
  * @param {Object} sheetData  - header -> value from sheet
  * @param {Object} jiraData   - header -> value from extractRowFromIssue_
@@ -693,18 +665,14 @@ function resolveDirection_(lastSynced, jiraUpdated) {
  * @return {boolean} true if the data matches (no push needed)
  */
 function rowDataMatchesJira_(sheetData, jiraData, headerMap) {
-  // Build skip set from read-only columns so it stays in sync with SheetMeta
-  const skipHeaders = {};
   const cols = getResolvedColumns();
   for (let i = 0; i < cols.length; i++) {
-    if (cols[i].readOnly) skipHeaders[cols[i].header] = true;
-  }
+    const col = cols[i];
+    if (col.readOnly) continue;
+    if (!headerMap[col.header]) continue;
 
-  for (const header in headerMap) {
-    if (skipHeaders[header]) continue;
-
-    const sheetVal = (sheetData[header] || '').toString().trim();
-    const jiraVal = (jiraData[header] || '').toString().trim();
+    const sheetVal = (sheetData[col.header] || '').toString().trim();
+    const jiraVal = (jiraData[col.header] || '').toString().trim();
 
     if (sheetVal !== jiraVal) return false;
   }
