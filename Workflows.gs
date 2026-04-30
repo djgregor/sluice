@@ -14,8 +14,8 @@ const SLUICE_WORKFLOWS = {
   'task':       ['Draft', 'TO DO', 'In Progress', 'Verifying', 'Done'],
   'spike':      ['Draft', 'TO DO', 'In Progress', 'Verifying', 'Done'],
   'bug':        ['Triage', 'TO DO', 'Dev In Progress', 'Resolved', 'Ready For QA', 'QA In Progress', 'Done'],
-  'tech story': ['Draft', 'Ready for Grooming', 'Dev In Progress', 'Review', 'Done'],
-  'story':      ['Draft', 'BA in Progress', 'Dev In Progress', 'Done'],
+  'tech story': ['Draft', 'Ready for Grooming', 'Ready for Engineering', 'Dev In Progress', 'Review', 'Done'],
+  'story':      ['Draft', 'BA in Progress', 'Ready for Engineering', 'Dev In Progress', 'Done'],
   'epic':       ['Draft', 'Scheduled for Analysis', 'Analyzing', 'Analyzed'],
   'service request': ['Draft', 'TO DO', 'In Progress', 'Verifying', 'Done']
 };
