@@ -107,11 +107,16 @@ function syncCurrentSheet() {
   // Clean up rows for issues no longer in the filter.
   // Skipped when the search was truncated by maxResults, since we can't tell
   // "fell out of filter" apart from "not fetched this pass".
+  // Newly-created keys are merged in so we don't delete rows we just created
+  // (they wouldn't be in the original search results).
   let removed = 0;
   if (!searchResult.truncated) {
     const keySet = {};
     for (let i = 0; i < searchResult.issues.length; i++) {
       keySet[searchResult.issues[i].key] = true;
+    }
+    for (let i = 0; i < result.createdKeys.length; i++) {
+      keySet[result.createdKeys[i]] = true;
     }
     removed = removeStaleRows_(sheet, keySet);
   }
@@ -396,6 +401,7 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
     unchanged: 0,            // matched Jira, no diffs
     skippedBlank: 0,         // sheet rows with no Key and no Summary
     skippedOutOfFilter: 0,   // sheet rows whose Key isn't in the current filter
+    createdKeys: [],         // keys of issues created during this pass
     errors: []
   };
 
@@ -464,6 +470,7 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
         } else {
           stats.created++;
           key = createResult.key;
+          stats.createdKeys.push(key);
           if (headerMap['Key']) {
             setKeyLink_(sheet, rowNum, headerMap['Key'], key);
           }

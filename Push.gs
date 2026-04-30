@@ -143,9 +143,10 @@ function createIssue_(rowData, columns, cfg, userCache) {
     }
   }
 
-  // Team custom field (set from config default)
+  // Team custom field (Atlassian Teams expects the GUID as a plain string,
+  // not wrapped in { id: ... }).
   if (cfg.teamField && cfg.teamId) {
-    payload.fields[cfg.teamField] = { id: cfg.teamId };
+    payload.fields[cfg.teamField] = cfg.teamId;
   }
 
   const result = jiraPost('/rest/api/3/issue', payload);
