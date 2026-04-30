@@ -124,7 +124,9 @@ function syncCurrentSheet() {
     'Created in Jira: ' + result.created + '\n' +
     'Appended from Jira: ' + result.appended + '\n' +
     'Removed (no longer in filter): ' + removed + '\n' +
-    'Unchanged: ' + result.unchanged;
+    'Unchanged (matched Jira): ' + result.unchanged + '\n' +
+    'Skipped (blank rows): ' + result.skippedBlank + '\n' +
+    'Skipped (key not in current filter): ' + result.skippedOutOfFilter;
 
   if (searchResult.truncated) {
     msg += '\n\nNote: result set hit the maxResults cap — stale-row cleanup skipped. ' +
@@ -314,7 +316,7 @@ function buildDryRunReport_(sheet, issues, columns, truncated) {
 /**
  * Per-field diff between a sheet row and the equivalent Jira row data.
  * Only walks Sluice-managed, writable columns — user-added columns and
- * read-only columns are ignored, matching rowDataMatchesJira_.
+ * read-only columns are ignored.
  *
  * @return {Array<{header,sheetVal,jiraVal}>}
  */
@@ -389,7 +391,13 @@ function writeDryRunSheet_(ss, sourceName, jql, report, truncated) {
  * @return {Object} { pulled, pushed, created, appended, unchanged, errors[] }
  */
 function executeSync_withIssues_(sheet, issues, columns, cfg) {
-  const stats = { pulled: 0, pushed: 0, created: 0, appended: 0, unchanged: 0, errors: [] };
+  const stats = {
+    pulled: 0, pushed: 0, created: 0, appended: 0,
+    unchanged: 0,            // matched Jira, no diffs
+    skippedBlank: 0,         // sheet rows with no Key and no Summary
+    skippedOutOfFilter: 0,   // sheet rows whose Key isn't in the current filter
+    errors: []
+  };
 
   // Build a map of key -> Jira issue
   const jiraIssueMap = {};
@@ -415,6 +423,10 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
   const userCache = {};
   const now = new Date().toISOString();
 
+  // Collect Last Synced updates so we can flush them in one batched write
+  // at the end of the loop instead of N round-trips to Sheets.
+  const lastSyncedUpdates = [];  // [{ rowNum, value }]
+
   /* 3. Process existing sheet rows */
   SpreadsheetApp.getActiveSpreadsheet().toast('Processing rows…', 'Sluice', -1);
 
@@ -432,9 +444,9 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
     let key = rowData['Key'] || '';
     const summary = rowData['Summary'] || '';
 
-    // Skip completely empty rows
+    // Skip completely empty rows (formula-only fill-down, padding, etc.)
     if (!key && !summary) {
-      stats.unchanged++;
+      stats.skippedBlank++;
       continue;
     }
 
@@ -455,7 +467,7 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
           if (headerMap['Key']) {
             setKeyLink_(sheet, rowNum, headerMap['Key'], key);
           }
-          // Post-create: links and status
+          // Post-create: links and status (always — new issue, nothing in Jira to compare)
           handleLinks_(key, rowData, stats.errors, rowNum);
           if (rowData['Status']) {
             const createType = rowData['Type'] || 'Task';
@@ -463,7 +475,7 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
           }
           // Stamp Last Synced AFTER transitions so it's newer than Jira's updated
           if (headerMap['Last Synced']) {
-            sheet.getRange(rowNum, headerMap['Last Synced']).setValue(new Date().toISOString());
+            lastSyncedUpdates.push({ rowNum: rowNum, value: new Date().toISOString() });
           }
         }
       } catch (e) {
@@ -481,7 +493,7 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
       // It may have moved out of the filter scope or been deleted.
       // Do NOT push updates - this could modify issues outside the
       // user's intended scope. Just skip it.
-      stats.unchanged++;
+      stats.skippedOutOfFilter++;
       continue;
     }
 
@@ -500,27 +512,37 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
     } else if (direction === 'push') {
       // Sheet wins - but only push if the row actually differs from Jira
       const jiraRowData = extractRowFromIssue_(jiraIssue, columns, '');
-      if (rowDataMatchesJira_(rowData, jiraRowData, headerMap)) {
+      const diffs = diffRow_(rowData, jiraRowData, headerMap, columns);
+
+      if (diffs.length === 0) {
         // No differences - skip the push, just refresh timestamp
         if (headerMap['Last Synced']) {
-          sheet.getRange(rowNum, headerMap['Last Synced']).setValue(now);
+          lastSyncedUpdates.push({ rowNum: rowNum, value: now });
         }
         stats.unchanged++;
       } else {
+        // Build a set of which Sluice fields differ so we can skip the link
+        // and transition API calls (each costs 1+ HTTP round-trips) when those
+        // specific fields didn't change.
+        const diffSet = {};
+        for (let d = 0; d < diffs.length; d++) diffSet[diffs[d].header] = true;
+
         try {
           const updateResult2 = updateIssue_(key, rowData, columns, cfg, userCache);
           if (updateResult2.error) {
             stats.errors.push('Row ' + rowNum + ' (' + key + '): ' + updateResult2.error);
           } else {
             stats.pushed++;
-            handleLinks_(key, rowData, stats.errors, rowNum);
-            if (rowData['Status']) {
+            if (diffSet['DependsOn'] || diffSet['Blocking']) {
+              handleLinks_(key, rowData, stats.errors, rowNum);
+            }
+            if (diffSet['Status'] && rowData['Status']) {
               const pushType = rowData['Type'] || (jiraIssue.fields.issuetype ? jiraIssue.fields.issuetype.name : 'Task');
               handleStatusTransition_(key, rowData['Status'], pushType, stats.errors, rowNum);
             }
             // Stamp Last Synced AFTER transitions so it's newer than Jira's updated
             if (headerMap['Last Synced']) {
-              sheet.getRange(rowNum, headerMap['Last Synced']).setValue(new Date().toISOString());
+              lastSyncedUpdates.push({ rowNum: rowNum, value: new Date().toISOString() });
             }
           }
         } catch (e) {
@@ -531,11 +553,14 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
     } else {
       // No changes detected - still refresh Last Synced
       if (headerMap['Last Synced']) {
-        sheet.getRange(rowNum, headerMap['Last Synced']).setValue(now);
+        lastSyncedUpdates.push({ rowNum: rowNum, value: now });
       }
       stats.unchanged++;
     }
   }
+
+  // Flush all Last Synced timestamp writes in batched setValues calls.
+  flushLastSyncedUpdates_(sheet, headerMap['Last Synced'], lastSyncedUpdates);
 
   /* 4. Append Jira issues not in the sheet */
   const appendRows = [];
@@ -613,6 +638,31 @@ function normalizeCell_(val) {
   return String(val).trim();
 }
 
+/**
+ * Write a list of Last Synced timestamps in as few setValues() calls as
+ * possible by grouping consecutive row numbers into runs.
+ *
+ * @param {Sheet} sheet
+ * @param {number} col   - 1-based column index of Last Synced (falsy = no-op)
+ * @param {Array<{rowNum: number, value: string}>} updates
+ */
+function flushLastSyncedUpdates_(sheet, col, updates) {
+  if (!col || updates.length === 0) return;
+  updates.sort(function (a, b) { return a.rowNum - b.rowNum; });
+  let i = 0;
+  while (i < updates.length) {
+    const startRow = updates[i].rowNum;
+    const values = [[updates[i].value]];
+    let j = i + 1;
+    while (j < updates.length && updates[j].rowNum === updates[j - 1].rowNum + 1) {
+      values.push([updates[j].value]);
+      j++;
+    }
+    sheet.getRange(startRow, col, values.length, 1).setValues(values);
+    i = j;
+  }
+}
+
 /* Conflict resolution */
 
 /**
@@ -649,33 +699,4 @@ function resolveDirection_(lastSynced, jiraUpdated) {
   // Jira hasn't changed since last sync -> sheet wins (push local edits)
   // The caller will compare field values before actually pushing.
   return 'push';
-}
-
-/* Row comparison */
-
-/**
- * Compare sheet row data against Jira row data to detect actual changes.
- * Only compares Sluice-managed, writable columns. User-added columns (e.g.
- * formula columns like "Days in Status") and read-only Sluice columns are
- * ignored, since neither is ever pushed.
- *
- * @param {Object} sheetData  - header -> value from sheet
- * @param {Object} jiraData   - header -> value from extractRowFromIssue_
- * @param {Object} headerMap  - header -> column index (only headers present in sheet)
- * @return {boolean} true if the data matches (no push needed)
- */
-function rowDataMatchesJira_(sheetData, jiraData, headerMap) {
-  const cols = getResolvedColumns();
-  for (let i = 0; i < cols.length; i++) {
-    const col = cols[i];
-    if (col.readOnly) continue;
-    if (!headerMap[col.header]) continue;
-
-    const sheetVal = (sheetData[col.header] || '').toString().trim();
-    const jiraVal = (jiraData[col.header] || '').toString().trim();
-
-    if (sheetVal !== jiraVal) return false;
-  }
-
-  return true;
 }
