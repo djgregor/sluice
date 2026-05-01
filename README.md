@@ -95,7 +95,7 @@ token).
 | `Pull.gs`         | Jira → Sheet sync                                 |
 | `Push.gs`         | Sheet → Jira helpers (create, update, transitions, links) |
 | `Sync.gs`         | Bidirectional sync with conflict resolution        |
-| `Workflows.gs`    | Per-issue-type workflow sequences, transition field auto-fill |
+| `Workflows.gs`    | Workflow lookup helpers, transition field auto-fill |
 | `Sidebar.html`    | Settings dialog UI                                 |
 | `install.sh`      | Deployment script (clasp-based)                    |
 | `defaults.conf`   | Team-shared configuration (gitignored)             |
@@ -122,7 +122,7 @@ defined transitions.  Sluice handles this automatically.
 
 When you change a status in the sheet (e.g., "Draft" → "Done"), Sluice:
 
-1. Looks up the issue type's workflow sequence (defined in `Workflows.gs`)
+1. Looks up the issue type's workflow sequence (declared via `SLUICE_WORKFLOW_*` in `defaults.conf`)
 2. Identifies the next intermediate status in the sequence
 3. Checks available Jira transitions for a match
 4. Executes the transition, auto-filling any required fields
@@ -138,9 +138,10 @@ At each hop, Sluice chooses the transition to execute in this order:
 
 ### Excluded Intermediates
 
-Terminal or side statuses (Won't Fix, Blocked, Cancelled, etc.) are
-never used as intermediate hops.  They are only transitioned to if they
-are the explicit target.
+Terminal or side statuses (e.g. Won't Fix, Blocked, Cancelled) are
+never used as intermediate hops — they are only transitioned to if
+they are the explicit target.  The list is configured per-org via
+`SLUICE_EXCLUDED_INTERMEDIATES` in `defaults.conf`.
 
 ### Transition Field Auto-Fill
 
@@ -216,10 +217,12 @@ Unrecognized keys are rejected with a warning.
 - **No real-time sync** — Sluice is manually triggered from the Sheets
   menu.  There is no automatic background polling or webhook-based push.
 
-- **Workflow coverage** — multi-hop transitions depend on workflow
-  sequences defined in `Workflows.gs`.  If your Jira instance has issue
-  types or workflow states not listed there, Sluice falls back to
-  first-available transitions, which may not follow the intended path.
+- **Workflow coverage** — multi-hop transitions depend on the workflow
+  sequences declared via `SLUICE_WORKFLOW_*` keys in `defaults.conf`.
+  If your Jira instance has issue types or workflow states not listed
+  there, Sluice falls back to first-available transitions, which may
+  not follow the intended path.  Add your workflows to `defaults.conf`
+  and re-run `./install.sh` to fix this.
 
 - **Google Sheets tables** — do not convert a Sluice-managed sheet into
   a Google Sheets "table".  Tables silently reformat cell contents to
@@ -227,7 +230,6 @@ Unrecognized keys are rejected with a warning.
   changes on every sync — even a simple sort inside a table can report
   dozens of rows as modified when nothing was edited.  Use a plain range
   instead; Sluice already provides frozen headers and hyperlinked Keys.
-  Add your workflows to `SLUICE_WORKFLOWS` to fix this.
 
 - **Additive link management** — Sluice creates missing issue links
   (DependsOn, Blocking) but removing a key from the sheet won't delete

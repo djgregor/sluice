@@ -25,7 +25,7 @@
  * @return {Object} { key, error }
  */
 function createIssue_(rowData, columns, cfg, userCache) {
-  const issueType = rowData['Type'] || 'Task';
+  const issueType = rowData['Type'] || getDefaultIssueType_();
   const summary = rowData['Summary'] || '';
 
   if (!summary) {
@@ -641,8 +641,9 @@ function findColumnDef_(columns, header) {
  */
 function isExcludedIntermediate_(statusName) {
   const lower = statusName.toLowerCase();
-  for (let i = 0; i < SLUICE_EXCLUDED_INTERMEDIATES.length; i++) {
-    if (SLUICE_EXCLUDED_INTERMEDIATES[i] === lower) return true;
+  const excluded = getExcludedIntermediates_();
+  for (let i = 0; i < excluded.length; i++) {
+    if (excluded[i] === lower) return true;
   }
   return false;
 }

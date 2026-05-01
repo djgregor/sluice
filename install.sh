@@ -67,6 +67,15 @@ SLUICE_BUG_STEPS_FIELD="${SLUICE_BUG_STEPS_FIELD:-}"
 SLUICE_BUG_EXPECTED_FIELD="${SLUICE_BUG_EXPECTED_FIELD:-}"
 SLUICE_BUG_ACTUAL_FIELD="${SLUICE_BUG_ACTUAL_FIELD:-}"
 SLUICE_BUG_OUTCOMES_FIELD="${SLUICE_BUG_OUTCOMES_FIELD:-}"
+SLUICE_EXCLUDED_INTERMEDIATES="${SLUICE_EXCLUDED_INTERMEDIATES:-}"
+SLUICE_RESOLUTION_DONE="${SLUICE_RESOLUTION_DONE:-}"
+SLUICE_DEFAULT_ISSUE_TYPE="${SLUICE_DEFAULT_ISSUE_TYPE:-}"
+
+# Parallel arrays for SLUICE_WORKFLOW_* entries (bash 3.2 compatible — no
+# associative arrays). WORKFLOW_TYPES holds the issue type key suffix
+# (e.g. "TECH_STORY"); WORKFLOW_VALUES holds the pipe-separated status list.
+WORKFLOW_TYPES=()
+WORKFLOW_VALUES=()
 
 # Parse defaults.conf safely — only allow known variable names with simple values.
 # This avoids executing arbitrary commands that 'source' would allow.
@@ -81,6 +90,13 @@ if [[ -f "$DEFAULTS_FILE" ]]; then
     value="${value%\"}"
     value="${value#\'}"
     value="${value%\'}"
+    # Workflow keys use a prefix (SLUICE_WORKFLOW_<TYPE>) since the set of
+    # issue types varies by org — no fixed allowlist works.
+    if [[ "$key" =~ ^SLUICE_WORKFLOW_[A-Z0-9_]+$ ]]; then
+      WORKFLOW_TYPES+=("${key#SLUICE_WORKFLOW_}")
+      WORKFLOW_VALUES+=("$value")
+      continue
+    fi
     # Only accept known config keys
     case "$key" in
       SLUICE_BASE_URL)      SLUICE_BASE_URL="$value" ;;
@@ -96,6 +112,9 @@ if [[ -f "$DEFAULTS_FILE" ]]; then
       SLUICE_BUG_EXPECTED_FIELD) SLUICE_BUG_EXPECTED_FIELD="$value" ;;
       SLUICE_BUG_ACTUAL_FIELD)   SLUICE_BUG_ACTUAL_FIELD="$value" ;;
       SLUICE_BUG_OUTCOMES_FIELD) SLUICE_BUG_OUTCOMES_FIELD="$value" ;;
+      SLUICE_EXCLUDED_INTERMEDIATES) SLUICE_EXCLUDED_INTERMEDIATES="$value" ;;
+      SLUICE_RESOLUTION_DONE)        SLUICE_RESOLUTION_DONE="$value" ;;
+      SLUICE_DEFAULT_ISSUE_TYPE)     SLUICE_DEFAULT_ISSUE_TYPE="$value" ;;
       *) echo "Warning: unknown config key '$key' in defaults.conf (ignored)" ;;
     esac
   done < "$DEFAULTS_FILE"
@@ -152,6 +171,10 @@ if [[ -z "$MODE" ]]; then
   echo "  Bug Expected:    ${SLUICE_BUG_EXPECTED_FIELD:-(not set)}"
   echo "  Bug Actual:      ${SLUICE_BUG_ACTUAL_FIELD:-(not set)}"
   echo "  Bug Outcomes:    ${SLUICE_BUG_OUTCOMES_FIELD:-(not set)}"
+  echo "  Workflows:       ${#WORKFLOW_TYPES[@]} issue type(s)"
+  echo "  Excluded:        ${SLUICE_EXCLUDED_INTERMEDIATES:-(none)}"
+  echo "  Resolution Done: ${SLUICE_RESOLUTION_DONE:-Done (default)}"
+  echo "  Default Type:    ${SLUICE_DEFAULT_ISSUE_TYPE:-Task (default)}"
   echo ""
   echo "  To change these, edit: defaults.conf"
   echo ""
@@ -217,6 +240,85 @@ add_default() {
   fi
 }
 
+# Emit a literal (already-formatted) value for a key. Used for arrays/objects
+# where the value is JS source rather than a string.
+add_default_literal() {
+  local key="$1" literal="$2"
+  if [[ -n "$literal" ]]; then
+    if $HAS_DEFAULTS; then
+      DEFAULTS_BODY+=","
+    fi
+    DEFAULTS_BODY+=$'\n'"  $key: $literal"
+    HAS_DEFAULTS=true
+  fi
+}
+
+# JS-quote a single status name (single-quoted, with embedded quotes escaped).
+js_quote() {
+  local s="${1//\\/\\\\}"
+  s="${s//\'/\\\'}"
+  printf "'%s'" "$s"
+}
+
+# Build a JS array literal from a delimited string. Args: delimiter, value.
+build_js_array() {
+  local delim="$1" raw="$2"
+  [[ -z "$raw" ]] && return 0
+  local out="["
+  local first=true
+  local IFS_ORIG="$IFS"
+  IFS="$delim"
+  # shellcheck disable=SC2206
+  local parts=($raw)
+  IFS="$IFS_ORIG"
+  for part in "${parts[@]}"; do
+    # Trim whitespace
+    part="$(echo "$part" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [[ -z "$part" ]] && continue
+    if $first; then
+      first=false
+    else
+      out+=", "
+    fi
+    out+="$(js_quote "$part")"
+  done
+  out+="]"
+  printf "%s" "$out"
+}
+
+# Convert a workflow type key (e.g. "TECH_STORY") to its JS object key
+# (e.g. "tech story"). Lowercase + replace underscores with spaces.
+workflow_key_to_js() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | tr '_' ' '
+}
+
+# Build the workflows object literal from the parallel arrays.
+build_workflows_block() {
+  local count=${#WORKFLOW_TYPES[@]}
+  [[ $count -eq 0 ]] && return 0
+  local out="{"
+  local first=true
+  local i=0
+  while [[ $i -lt $count ]]; do
+    local type_key="${WORKFLOW_TYPES[$i]}"
+    local statuses="${WORKFLOW_VALUES[$i]}"
+    if [[ -n "$statuses" ]]; then
+      local js_key="$(workflow_key_to_js "$type_key")"
+      local arr="$(build_js_array "|" "$statuses")"
+      if $first; then
+        first=false
+      else
+        out+=","
+      fi
+      out+=$'\n'"    $(js_quote "$js_key"): $arr"
+    fi
+    i=$((i + 1))
+  done
+  out+=$'\n'"  }"
+  $first && return 0
+  printf "%s" "$out"
+}
+
 add_default "jiraBaseUrl"   "${SLUICE_BASE_URL:-}"
 add_default "jiraProject"   "${SLUICE_PROJECT:-}"
 add_default "loeField"      "${SLUICE_LOE_FIELD:-}"
@@ -230,6 +332,14 @@ add_default "bugStepsField"    "${SLUICE_BUG_STEPS_FIELD:-}"
 add_default "bugExpectedField" "${SLUICE_BUG_EXPECTED_FIELD:-}"
 add_default "bugActualField"   "${SLUICE_BUG_ACTUAL_FIELD:-}"
 add_default "bugOutcomesField" "${SLUICE_BUG_OUTCOMES_FIELD:-}"
+add_default "resolutionDone"     "${SLUICE_RESOLUTION_DONE:-}"
+add_default "defaultIssueType"   "${SLUICE_DEFAULT_ISSUE_TYPE:-}"
+
+WORKFLOWS_LITERAL="$(build_workflows_block)"
+add_default_literal "workflows" "$WORKFLOWS_LITERAL"
+
+EXCLUDED_LITERAL="$(build_js_array "," "${SLUICE_EXCLUDED_INTERMEDIATES:-}")"
+add_default_literal "excludedIntermediates" "$EXCLUDED_LITERAL"
 
 if $HAS_DEFAULTS; then
   cat > Defaults.gs <<GSEOF

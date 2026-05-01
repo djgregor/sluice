@@ -154,6 +154,10 @@ Available settings:
 | `SLUICE_BUG_EXPECTED_FIELD` | Custom field ID for "Expected Result" (Bug issues) |
 | `SLUICE_BUG_ACTUAL_FIELD`   | Custom field ID for "Actual Results" (Bug issues) |
 | `SLUICE_BUG_OUTCOMES_FIELD` | Custom field ID for "Actual Outcomes" (Bug issues) |
+| `SLUICE_WORKFLOW_<TYPE>`    | Status sequence for an issue type, pipe-separated.  See [Status Transitions](#status-transitions) for the full schema. |
+| `SLUICE_EXCLUDED_INTERMEDIATES` | Comma-separated list of statuses (e.g. `Won't Fix,Blocked`) the multi-hop walker should never use as an intermediate hop |
+| `SLUICE_RESOLUTION_DONE`    | Resolution name applied when transitioning to a Done-like status (default: `Done`) |
+| `SLUICE_DEFAULT_ISSUE_TYPE` | Issue type used when the sheet's `Type` column is blank on create (default: `Task`) |
 
 When `install.sh` runs, it generates a `Defaults.gs` file from these
 values, which is baked into the Apps Script project.  Individual users
@@ -408,7 +412,8 @@ transitions.  Sluice handles this automatically via multi-hop walking.
 
 When you change a status in the sheet (e.g., "Draft" → "Done"):
 
-1. Sluice looks up the issue type's workflow sequence in `Workflows.gs`
+1. Sluice looks up the issue type's workflow sequence (declared via
+   `SLUICE_WORKFLOW_*` keys in `defaults.conf`)
 2. Identifies the next intermediate status in the sequence
 3. Checks available Jira transitions for a match
 4. Executes the transition, auto-filling any required fields
@@ -416,18 +421,26 @@ When you change a status in the sheet (e.g., "Draft" → "Done"):
 
 ### Defined Workflow Sequences
 
-| Issue Type      | Sequence |
-|-----------------|----------|
-| Task            | Draft → TO DO → In Progress → Verifying → Done |
-| Spike           | Draft → TO DO → In Progress → Verifying → Done |
-| Bug             | Triage → TO DO → Dev In Progress → Resolved → Ready For QA → QA In Progress → Done |
-| Tech Story      | Draft → Ready for Grooming → Dev In Progress → Review → Done |
-| Story           | Draft → BA in Progress → Dev In Progress → Done |
-| Epic            | Draft → Scheduled for Analysis → Analyzing → Analyzed |
-| Service Request | Draft → TO DO → In Progress → Verifying → Done |
+Workflow sequences are declared in `defaults.conf` per issue type, e.g.:
 
-These sequences are defined in `Workflows.gs` and can be customized for
-your Jira instance.  Status names are matched case-insensitively.
+```
+SLUICE_WORKFLOW_TASK="Draft|TO DO|In Progress|Verifying|Done"
+SLUICE_WORKFLOW_BUG="Triage|TO DO|Dev In Progress|Resolved|Ready For QA|QA In Progress|Done"
+SLUICE_WORKFLOW_STORY="Draft|BA in Progress|Ready for Engineering|Dev In Progress|Done"
+SLUICE_WORKFLOW_TECH_STORY="Draft|Ready for Grooming|Ready for Engineering|Dev In Progress|Review|Done"
+```
+
+The key suffix is the issue type name uppercased with spaces replaced by
+underscores (e.g. "Tech Story" → `TECH_STORY`).  Status names must match
+Jira exactly (case-insensitive matching is used) and are listed in
+workflow order, separated by `|`.
+
+`defaults.conf.example` ships with a fully worked example you can copy
+and adapt.  After editing, re-run `./install.sh` to apply.
+
+If no workflow is declared for an issue type, Sluice falls back to
+whatever transitions Jira returns directly — multi-hop navigation is
+simply skipped.
 
 ### Transition Priority
 
@@ -651,12 +664,13 @@ through the configuration file.
 **Status change fails with "No path from X to Y"**
 - The target status isn't reachable from the current status via available
   transitions.  Check if the workflow sequence for this issue type is
-  defined in `Workflows.gs`.
+  declared via `SLUICE_WORKFLOW_*` in `defaults.conf` and re-run
+  `./install.sh` after editing.
 
 **Status change fails with "requires fields"**
 - A transition screen requires a field that Sluice can't auto-fill.
-  Complete the transition manually in Jira, or add the field to the
-  defaults in `Workflows.gs`.
+  Complete the transition manually in Jira, or extend
+  `getTransitionDefaults_` in `Workflows.gs` with the field's default value.
 
 **"HTTP 400" on sync/update**
 - Usually a field validation error.  The error message includes Jira's

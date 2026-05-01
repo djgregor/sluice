@@ -477,7 +477,7 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
           // Post-create: links and status (always — new issue, nothing in Jira to compare)
           handleLinks_(key, rowData, stats.errors, rowNum);
           if (rowData['Status']) {
-            const createType = rowData['Type'] || 'Task';
+            const createType = rowData['Type'] || getDefaultIssueType_();
             handleStatusTransition_(key, rowData['Status'], createType, stats.errors, rowNum);
           }
           // Stamp Last Synced AFTER transitions so it's newer than Jira's updated
@@ -544,7 +544,7 @@ function executeSync_withIssues_(sheet, issues, columns, cfg) {
               handleLinks_(key, rowData, stats.errors, rowNum);
             }
             if (diffSet['Status'] && rowData['Status']) {
-              const pushType = rowData['Type'] || (jiraIssue.fields.issuetype ? jiraIssue.fields.issuetype.name : 'Task');
+              const pushType = rowData['Type'] || (jiraIssue.fields.issuetype ? jiraIssue.fields.issuetype.name : getDefaultIssueType_());
               handleStatusTransition_(key, rowData['Status'], pushType, stats.errors, rowNum);
             }
             // Stamp Last Synced AFTER transitions so it's newer than Jira's updated

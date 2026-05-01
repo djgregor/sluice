@@ -1,37 +1,63 @@
 /**
  * Sluice - Workflow configuration
  *
- * Defines the expected status progression for each issue type so multi-hop
- * transitions can navigate through intermediate states correctly.
+ * All workflow data is config-driven via SLUICE_DEFAULTS (set by install.sh
+ * from defaults.conf). This file only defines the lookup helpers; the actual
+ * status sequences, excluded intermediates, resolution name, and default
+ * issue type live in defaults.conf.
  *
- * Customize these sequences for your Jira instance's workflows.
- * Status names must match Jira exactly (case-insensitive matching is used).
+ * If SLUICE_DEFAULTS is missing or partial, fallbacks below let Sluice run
+ * against a stock Jira project — multi-hop transitions are simply skipped
+ * (the existing code path falls back to Jira's first-available transition).
  */
 
-/* Status sequences by issue type */
+/* Config readers */
 
-const SLUICE_WORKFLOWS = {
-  'task':       ['Draft', 'TO DO', 'In Progress', 'Verifying', 'Done'],
-  'spike':      ['Draft', 'TO DO', 'In Progress', 'Verifying', 'Done'],
-  'bug':        ['Triage', 'TO DO', 'Dev In Progress', 'Resolved', 'Ready For QA', 'QA In Progress', 'Done'],
-  'tech story': ['Draft', 'Ready for Grooming', 'Ready for Engineering', 'Dev In Progress', 'Review', 'Done'],
-  'story':      ['Draft', 'BA in Progress', 'Ready for Engineering', 'Dev In Progress', 'Done'],
-  'epic':       ['Draft', 'Scheduled for Analysis', 'Analyzing', 'Analyzed'],
-  'service request': ['Draft', 'TO DO', 'In Progress', 'Verifying', 'Done']
-};
+function getDefaults_() {
+  return typeof SLUICE_DEFAULTS !== 'undefined' ? SLUICE_DEFAULTS : {};
+}
 
 /**
- * Statuses that should never be used as intermediate hops.
- * These are terminal or side statuses that the multi-hop walker
- * should only transition to if they are the explicit target.
+ * Status sequences by issue type (lowercase keys), each value is an array
+ * of status names in workflow order. Empty object = no multi-hop navigation.
  */
-const SLUICE_EXCLUDED_INTERMEDIATES = [
-  "won't fix",
-  'blocked',
-  'descope task',
-  'cancelled',
-  'canceled'
-];
+function getWorkflows_() {
+  const d = getDefaults_();
+  return d.workflows || {};
+}
+
+/**
+ * Statuses that should never be used as intermediate hops — terminal or
+ * side states the multi-hop walker only transitions to if explicitly targeted.
+ * Returns lowercase strings.
+ */
+function getExcludedIntermediates_() {
+  const d = getDefaults_();
+  const list = d.excludedIntermediates || [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    out.push(String(list[i]).toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * Resolution name used when transitioning to a Done-like status.
+ * Defaults to "Done" (standard Jira).
+ */
+function getResolutionDone_() {
+  const d = getDefaults_();
+  return d.resolutionDone || 'Done';
+}
+
+/**
+ * Issue type used when the sheet's Type column is blank on create.
+ * Defaults to "Task".
+ */
+function getDefaultIssueType_() {
+  const d = getDefaults_();
+  return d.defaultIssueType || 'Task';
+}
 
 /* Sequence lookup */
 
@@ -52,7 +78,8 @@ const SLUICE_EXCLUDED_INTERMEDIATES = [
  * @return {string|null} the next status to transition to, or null
  */
 function getNextInSequence_(issueType, currentStatus, targetStatus) {
-  const seq = SLUICE_WORKFLOWS[issueType.toLowerCase()];
+  const workflows = getWorkflows_();
+  const seq = workflows[issueType.toLowerCase()];
   if (!seq) return null;
 
   let currentIdx = -1;
@@ -91,7 +118,7 @@ function getTransitionDefaults_() {
   }
 
   // Resolution (standard Jira field, used for Done transitions on Stories etc.)
-  defaults['resolution'] = { name: 'Done' };
+  defaults['resolution'] = { name: getResolutionDone_() };
 
   return defaults;
 }

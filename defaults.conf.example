@@ -23,3 +23,37 @@ SLUICE_PROJECT=MYPROJ
 # SLUICE_BUG_EXPECTED_FIELD=customfield_NNNNN
 # SLUICE_BUG_ACTUAL_FIELD=customfield_NNNNN
 # SLUICE_BUG_OUTCOMES_FIELD=customfield_NNNNN
+
+# --- Workflows -------------------------------------------------------------
+#
+# Status sequences by issue type, used to navigate multi-hop transitions
+# (e.g. moving Draft -> Done when intermediate states are required).
+# Keys are SLUICE_WORKFLOW_<TYPE>, where <TYPE> is the issue type name
+# uppercased with spaces replaced by underscores (e.g. "Tech Story" -> TECH_STORY).
+# Values are status names separated by '|', listed in workflow order.
+# Status names must match Jira exactly (case-insensitive matching is used).
+#
+# Omit this section entirely to fall back to whatever transitions Jira
+# returns for each issue (no multi-hop navigation).
+#
+# Worked example below mirrors a fairly typical Jira Cloud setup:
+# SLUICE_WORKFLOW_TASK="Draft|TO DO|In Progress|Verifying|Done"
+# SLUICE_WORKFLOW_SPIKE="Draft|TO DO|In Progress|Verifying|Done"
+# SLUICE_WORKFLOW_BUG="Triage|TO DO|Dev In Progress|Resolved|Ready For QA|QA In Progress|Done"
+# SLUICE_WORKFLOW_TECH_STORY="Draft|Ready for Grooming|Ready for Engineering|Dev In Progress|Review|Done"
+# SLUICE_WORKFLOW_STORY="Draft|BA in Progress|Ready for Engineering|Dev In Progress|Done"
+# SLUICE_WORKFLOW_EPIC="Draft|Scheduled for Analysis|Analyzing|Analyzed"
+# SLUICE_WORKFLOW_SERVICE_REQUEST="Draft|TO DO|In Progress|Verifying|Done"
+
+# Statuses that should never be used as intermediate hops — terminal or
+# side states the multi-hop walker only transitions to if explicitly targeted.
+# Comma-separated, case-insensitive.
+# SLUICE_EXCLUDED_INTERMEDIATES="Won't Fix,Blocked,Descope Task,Cancelled,Canceled"
+
+# Resolution name used when transitioning issues to a Done-like status.
+# Defaults to "Done" if unset.
+# SLUICE_RESOLUTION_DONE=Done
+
+# Issue type used when the sheet's Type column is blank on create.
+# Defaults to "Task" if unset.
+# SLUICE_DEFAULT_ISSUE_TYPE=Task
